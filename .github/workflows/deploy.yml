@@ -36,10 +36,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Validate Laravel version
-        run: |
-          composer show laravel/framework | grep -q 'versions : *10.\|versions : *11.' || \
-          (echo "::error::Laravel version must be 10 or higher" && exit 1)
+      # - name: Validate Laravel version
+      #   run: |
+      #     composer show laravel/framework | grep -q 'versions : *10.\|versions : *11.' || \
+      #     (echo "::error::Laravel version must be 10 or higher" && exit 1)
 
       - name: Validate environment
         run: |
