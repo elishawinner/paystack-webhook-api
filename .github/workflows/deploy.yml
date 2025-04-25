@@ -69,68 +69,127 @@ jobs:
       #       ${{ secrets.DB_DATABASE }} > db_backup_${timestamp}.sql
       #     gzip db_backup_${timestamp}.sql
 
-      - name: Upload backup artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: db-backup
-          path: db_backup_*.sql.gz
+      # - name: Upload backup artifact
+      #   uses: actions/upload-artifact@v3
+      #   with:
+      #     name: db-backup
+      #     path: db_backup_*.sql.gz
 
-  tests:
-    name: Tests (PHP ${{ matrix.php }})
-    needs: setup
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        php: ['8.2', '8.3']
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: test_db
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+  # tests:
+  #   name: Tests (PHP ${{ matrix.php }})
+  #   needs: setup
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       php: ['8.2', '8.3']
+  #   services:
+  #     mysql:
+  #       image: mysql:8.0
+  #       env:
+  #         MYSQL_ROOT_PASSWORD: root
+  #         MYSQL_DATABASE: test_db
+  #       ports:
+  #         - 3306:3306
+  #       options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: mbstring, ctype, fileinfo, openssl, pdo, mysql, bcmath, gd, imagick, pcntl, tokenizer
-          coverage: none
-          ini-values: memory_limit=2G
+  #     - name: Setup PHP
+  #       uses: shivammathur/setup-php@v2
+  #       with:
+  #         php-version: ${{ matrix.php }}
+  #         extensions: mbstring, ctype, fileinfo, openssl, pdo, mysql, bcmath, gd, imagick, pcntl, tokenizer
+  #         coverage: none
+  #         ini-values: memory_limit=2G
 
-      - name: Wait for MySQL to be ready
-        run: |
-          while ! mysqladmin ping -h"127.0.0.1" -uroot -proot --silent; do
-            sleep 1
-          done
+  #     - name: Wait for MySQL to be ready
+  #       run: |
+  #         while ! mysqladmin ping -h"127.0.0.1" -uroot -proot --silent; do
+  #           sleep 1
+  #         done
 
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress --ignore-platform-reqs
+  #     - name: Install dependencies
+  #       run: composer install --prefer-dist --no-progress --ignore-platform-reqs
 
-      - name: Configure test environment
-        run: |
-          cp .env.example .env.testing
-          echo "APP_ENV=testing" >> .env.testing
-          echo "DB_CONNECTION=mysql" >> .env.testing
-          echo "DB_HOST=127.0.0.1" >> .env.testing
-          echo "DB_PORT=3306" >> .env.testing
-          echo "DB_DATABASE=test_db" >> .env.testing
-          echo "DB_USERNAME=root" >> .env.testing
-          echo "DB_PASSWORD=root" >> .env.testing
-          php artisan config:clear --env=testing
+  #     - name: Configure test environment
+  #       run: |
+  #         cp .env.example .env.testing
+  #         echo "APP_ENV=testing" >> .env.testing
+  #         echo "DB_CONNECTION=mysql" >> .env.testing
+  #         echo "DB_HOST=127.0.0.1" >> .env.testing
+  #         echo "DB_PORT=3306" >> .env.testing
+  #         echo "DB_DATABASE=test_db" >> .env.testing
+  #         echo "DB_USERNAME=root" >> .env.testing
+  #         echo "DB_PASSWORD=root" >> .env.testing
+  #         php artisan config:clear --env=testing
 
-      - name: Run migrations for tests
-        run: php artisan migrate:fresh --env=testing --force
+  #     - name: Run migrations for tests
+  #       run: php artisan migrate:fresh --env=testing --force
 
-      - name: Run tests
-        run: php artisan test --env=testing
+  #     - name: Run tests
+  #       run: php artisan test --env=testing
+tests:
+  name: Tests (PHP ${{ matrix.php }})
+  needs: setup
+  runs-on: ubuntu-latest
+  strategy:
+    matrix:
+      php: ['8.2', '8.3']
+  services:
+    mysql:
+      image: mysql:8.0
+      env:
+        MYSQL_ROOT_PASSWORD: root
+        MYSQL_DATABASE: test_db
+      ports:
+        - 3306:3306
+      options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php }}
+        extensions: mbstring, ctype, fileinfo, openssl, pdo, mysql, bcmath, gd, pcntl, tokenizer
+        coverage: none
+        ini-values: memory_limit=2G
+
+    - name: Wait for MySQL to be ready
+      run: |
+        while ! mysqladmin ping -h"127.0.0.1" -uroot -proot --silent; do
+          sleep 1
+        done
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress --ignore-platform-reqs
+
+    - name: Configure test environment
+      run: |
+        cp .env.example .env.testing
+        echo "APP_ENV=testing" >> .env.testing
+        echo "APP_KEY=base64:$(openssl rand -base64 32)" >> .env.testing
+        echo "APP_DEBUG=true" >> .env.testing
+        echo "DB_CONNECTION=mysql" >> .env.testing
+        echo "DB_HOST=127.0.0.1" >> .env.testing
+        echo "DB_PORT=3306" >> .env.testing
+        echo "DB_DATABASE=test_db" >> .env.testing
+        echo "DB_USERNAME=root" >> .env.testing
+        echo "DB_PASSWORD=root" >> .env.testing
+        php artisan config:clear --env=testing
+
+    - name: Generate application key
+      run: php artisan key:generate --env=testing
+
+    - name: Run migrations for tests
+      run: php artisan migrate:fresh --env=testing --force
+
+    - name: Run tests
+      run: php artisan test --env=testing
   security:
     name: Security Checks
     needs: tests
