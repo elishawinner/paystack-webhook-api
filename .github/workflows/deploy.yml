@@ -69,20 +69,20 @@ jobs:
       #       ${{ secrets.DB_DATABASE }} > db_backup_${timestamp}.sql
       #     gzip db_backup_${timestamp}.sql
 
-      # - name: Upload backup artifact
-      #   uses: actions/upload-artifact@v3
-      #   with:
-      #     name: db-backup
-      #     path: db_backup_*.sql.gz
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: db-backup
+          path: db_backup_*.sql.gz
 
   tests:
-  name: Run Tests (PHP ${{ matrix.php }})
-  runs-on: ubuntu-latest
-  strategy:
+    name: Run Tests (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
     matrix:
       php: ['8.2', '8.3']
-  
-  services:
+
+    services:
     mysql:
       image: mysql:8.0
       env:
@@ -92,73 +92,72 @@ jobs:
         - 3306:3306
       options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
-  steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup PHP
-      uses: shivammathur/setup-php@v2
-      with:
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
         php-version: ${{ matrix.php }}
         extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
         coverage: none
 
-    - name: Wait for MySQL
-      run: |
-        for i in {1..10}; do
-          if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
+      - name: Wait for MySQL
+        run: |
+          for i in {1..10}; do
+            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
             echo "MySQL is ready!"
             break
-          fi
-          echo "Waiting for MySQL..."
-          sleep 5
-        done
+            fi
+             echo "Waiting for MySQL..."
+             sleep 5
+             done
 
-    - name: Install dependencies
-      run: composer install --prefer-dist --no-interaction
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction
 
-    - name: Setup test environment
-      run: |
-        # Create .env file from example
-        cp .env.example .env
-        # Generate application key
-        php artisan key:generate
-        # Configure database
-        sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
-        sed -i 's/^DB_HOST=.*/DB_HOST=127.0.0.1/' .env
-        sed -i 's/^DB_PORT=.*/DB_PORT=3306/' .env
-        sed -i 's/^DB_DATABASE=.*/DB_DATABASE=laravel_test/' .env
-        sed -i 's/^DB_USERNAME=.*/DB_USERNAME=root/' .env
-        sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=secret/' .env
-        # Set testing environment
-        echo "APP_ENV=testing" >> .env
-        echo "APP_DEBUG=true" >> .env
-        # Cache configuration
-        php artisan config:cache
+      - name: Setup test environment
+        run: |
+          # Create .env file from example
+          cp .env.example .env
+          # Generate application key
+          php artisan key:generate
+          # Configure database
+           sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+            sed -i 's/^DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+            sed -i 's/^DB_PORT=.*/DB_PORT=3306/' .env
+            sed -i 's/^DB_DATABASE=.*/DB_DATABASE=laravel_test/' .env
+             sed -i 's/^DB_USERNAME=.*/DB_USERNAME=root/' .env
+             sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=secret/' .env
+               # Set testing environment
+                echo "APP_ENV=testing" >> .env
+               echo "APP_DEBUG=true" >> .env
+               # Cache configuration
+              php artisan config:cache
 
-    - name: Run migrations
-      run: php artisan migrate:fresh --force
+      - name: Run migrations
+        run: php artisan migrate:fresh --force
 
-    - name: Execute tests
-      run: php artisan test
-  name: Tests (PHP ${{ matrix.php }})
-  needs: setup
-  runs-on: ubuntu-latest
-  strategy:
-      matrix:
-        php: ['8.2']
-  services:
-      mysql:
-        image: mysql:8.0
-        env:
+      - name: Execute tests
+        run: php artisan test
+        name: Tests (PHP ${{ matrix.php }})
+        needs: setup
+        runs-on: ubuntu-latest
+        strategy:
+         matrix:
+         php: ['8.2', '8.3']
+         services:
+         mysql:
+          image: mysql:8.0
+          env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: test_db
-        ports:
+          ports:
           - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+          options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
-   
-     steps:
+    steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
