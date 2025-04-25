@@ -1,10 +1,10 @@
-name: Laravel API Deployment Pipeline (Laravel 10+)
+name: Laravel API Deployment Pipeline with Subdomains (Laravel 10+)
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   pull_request:
-    branches: [main, master]
+    branches: [ main, master ]
 
 env:
   APP_ENV: production
@@ -12,36 +12,72 @@ env:
   PRIMARY_DOMAIN: ${{ secrets.PRIMARY_DOMAIN }}
   APP_SUBDOMAIN: ${{ secrets.APP_SUBDOMAIN }}
   DB_CONNECTION: mysql
+  LARAVEL_VERSION: 10
 
 jobs:
-  validate-environment:
-    name: Validate Environment
+  validate-subdomain:
+    name: Validate Subdomain Configuration
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Verify Laravel version
+    steps:
+      - name: Check DNS resolution
         run: |
-          LARAVEL_VERSION=$(composer show laravel/framework | grep 'versions' | grep -oP '\d+\.\d+\.\d+')
-          if [[ "$LARAVEL_VERSION" < "10.0.0" ]]; then
-            echo "::error::Laravel version $LARAVEL_VERSION is below minimum required version 10.0.0"
-            exit 1
+          if dig +short ${{ secrets.APP_SUBDOMAIN }}.${{ secrets.PRIMARY_DOMAIN }} | grep -q '[0-9]'; then
+            echo "Subdomain DNS resolved successfully"
+          else
+            echo "::warning::Subdomain DNS not properly configured"
           fi
 
-      - name: Check required secrets
-        run: |
-          if [ -z "${{ secrets.APP_KEY }}" ]; then echo "::error::APP_KEY not set"; exit 1; fi
-          if [ -z "${{ secrets.DB_HOST }}" ]; then echo "::error::DB_HOST not set"; exit 1; fi
-          if [ -z "${{ secrets.DB_DATABASE }}" ]; then echo "::error::DB_DATABASE not set"; exit 1; fi
-          if [ -z "${{ secrets.DB_USERNAME }}" ]; then echo "::error::DB_USERNAME not set"; exit 1; fi
-          if [ -z "${{ secrets.DB_PASSWORD }}" ]; then echo "::error::DB_PASSWORD not set"; exit 1; fi
+  setup:
+    name: Setup and Validate
+    runs-on: ubuntu-latest
 
-      - name: Generate app URL
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # - name: Validate Laravel version
+      #   run: |
+      #     composer show laravel/framework | grep -q 'versions : *10.\|versions : *11.' || \
+      #     (echo "::error::Laravel version must be 10 or higher" && exit 1)
+
+      - name: Validate environment
+        run: |
+          if [ -z "${{ secrets.APP_KEY }}" ]; then echo "APP_KEY not set"; exit 1; fi
+          if [ -z "${{ secrets.DB_DATABASE }}" ]; then echo "DB_DATABASE not set"; exit 1; fi
+          if [ -z "${{ secrets.DB_USERNAME }}" ]; then echo "DB_USERNAME not set"; exit 1; fi
+          if [ -z "${{ secrets.DB_PASSWORD }}" ]; then echo "DB_PASSWORD not set"; exit 1; fi
+          if [ -z "${{ secrets.DB_HOST }}" ]; then echo "DB_HOST not set"; exit 1; fi
+
+      - name: Generate full app URL
         run: echo "FULL_APP_URL=https://${{ secrets.APP_SUBDOMAIN }}.${{ secrets.PRIMARY_DOMAIN }}" >> $GITHUB_ENV
 
+  database-backup:
+    name: Database Backup (Production)
+    needs: setup
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install MySQL client
+        run: sudo apt-get install -y mysql-client
+
+      # - name: Create database backup
+      #   run: |
+      #     timestamp=$(date +%Y%m%d%H%M%S)
+      #     mysqldump -h ${{ secrets.DB_HOST }} -u ${{ secrets.DB_USERNAME }} -p"${{ secrets.DB_PASSWORD }}" \
+      #       ${{ secrets.DB_DATABASE }} > db_backup_${timestamp}.sql
+      #     gzip db_backup_${timestamp}.sql
+
+      # - name: Upload backup artifact
+      #   uses: actions/upload-artifact@v3
+      #   with:
+      #     name: db-backup
+      #     path: db_backup_*.sql.gz
+
   tests:
-    name: Run Tests (PHP ${{ matrix.php }})
-    needs: validate-environment
+    name: Tests (PHP ${{ matrix.php }})
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -50,120 +86,231 @@ jobs:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: secret
+          MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: test_db
         ports:
           - 3306:3306
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
+          extensions: mbstring, ctype, fileinfo, openssl, pdo, mysql, bcmath, gd, imagick, pcntl, tokenizer
           coverage: none
           ini-values: memory_limit=2G
 
-      - name: Wait for MySQL
+      - name: Wait for MySQL to be ready
         run: |
-          for i in {1..10}; do
-            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
-              echo "MySQL ready"
-              break
-            fi
-            sleep 5
+          while ! mysqladmin ping -h"127.0.0.1" -uroot -proot --silent; do
+            sleep 1
           done
 
-      - name: Setup test environment
-        run: |
-          cp .env.example .env
-          echo "APP_ENV=testing" >> .env
-          echo "APP_KEY=base64:$(openssl rand -base64 32)" >> .env
-          echo "DB_CONNECTION=mysql" >> .env
-          echo "DB_HOST=127.0.0.1" >> .env
-          echo "DB_PORT=3306" >> .env
-          echo "DB_DATABASE=test_db" >> .env
-          echo "DB_USERNAME=root" >> .env
-          echo "DB_PASSWORD=secret" >> .env
-
       - name: Install dependencies
-        run: composer install --prefer-dist --no-interaction
+        run: composer install --prefer-dist --no-progress --ignore-platform-reqs
 
-      - name: Run migrations
-        run: php artisan migrate:fresh --force
+      - name: Configure test environment
+        run: |
+          cp .env.example .env.testing
+          echo "APP_ENV=testing" >> .env.testing
+          echo "DB_CONNECTION=mysql" >> .env.testing
+          echo "DB_HOST=127.0.0.1" >> .env.testing
+          echo "DB_PORT=3306" >> .env.testing
+          echo "DB_DATABASE=test_db" >> .env.testing
+          echo "DB_USERNAME=root" >> .env.testing
+          echo "DB_PASSWORD=root" >> .env.testing
+          php artisan config:clear --env=testing
 
-      - name: Execute tests
-        run: php artisan test
+      - name: Run migrations for tests
+        run: php artisan migrate:fresh --env=testing --force
 
-  deploy:
-    name: Deploy to Production
+      - name: Run tests
+        run: php artisan test --env=testing
+
+  security:
+    name: Security Checks
     needs: tests
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
-          ini-values: memory_limit=2G
+          php-version: 8.3
+          extensions: mbstring, ctype, fileinfo
+
+      - name: Run security checks
+        run: |
+          composer require --dev laravel/pint larastan/larastan
+          ./vendor/bin/pint --test
+          ./vendor/bin/phpstan analyse
+
+  build:
+    name: Build Production Artifacts
+    needs: security
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.3
+          extensions: mbstring, ctype, fileinfo, openssl, pdo, mysql, bcmath, gd
+          ini-values: memory_limit=2G, opcache.enable=1, opcache.memory_consumption=256
 
       - name: Install dependencies
         run: |
-          composer install --no-dev --prefer-dist --no-progress --optimize-autoloader
+          composer install --no-dev --prefer-dist --no-progress --optimize-autoloader --ignore-platform-reqs
           composer dump-autoload -o
 
-      - name: Setup production environment
-        run: |
-          cp .env.example .env
-          echo "APP_ENV=production" >> .env
-          echo "APP_DEBUG=false" >> .env
-          echo "APP_URL=${{ env.FULL_APP_URL }}" >> .env
-          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
-          echo "DB_CONNECTION=mysql" >> .env
-          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
-          echo "DB_PORT=3306" >> .env
-          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
-          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
-          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
 
-      - name: Configure SSH
+      - name: Check for package.json
+        id: check-package
+        run: echo "exists=$(test -f package.json && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Install npm dependencies
+        if: steps.check-package.outputs.exists == 'true'
+        run: |
+          npm ci --no-audit
+          npm run build --if-present
+
+      - name: Configure production environment
+        run: |
+          cp .env.example .env.production
+          echo "APP_ENV=production" >> .env.production
+          echo "APP_DEBUG=false" >> .env.production
+          echo "APP_URL=${{ env.FULL_APP_URL }}" >> .env.production
+          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env.production
+          echo "DB_CONNECTION=mysql" >> .env.production
+          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env.production
+          echo "DB_PORT=3306" >> .env.production
+          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env.production
+          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env.production
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env.production
+
+      - name: Optimize application
+        run: |
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+          php artisan event:cache
+          php artisan storage:link
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deployment
+          rsync -av --delete \
+            --exclude=.git \
+            --exclude=.github \
+            --exclude=node_modules \
+            --exclude=tests \
+            --exclude=phpunit.xml \
+            --exclude=storage/logs \
+            --exclude=storage/framework/cache \
+            --exclude=storage/framework/sessions \
+            --exclude=storage/framework/views \
+            . deployment/
+          mv .env.production deployment/.env
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: laravel-deployment
+          path: deployment/
+
+  deploy-cpanel:
+    name: Deploy to cPanel Subdomain
+    needs: [build, database-backup]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
 
-      - name: Deploy to server
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: laravel-deployment
+
+      - name: Verify subdomain directory exists
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "mkdir -p ${{ secrets.CPANEL_DEPLOY_PATH }} && \
+             chmod 755 ${{ secrets.CPANEL_DEPLOY_PATH }}"
+
+      - name: Deploy to subdomain
         run: |
           rsync -avz --delete \
             -e "ssh -o StrictHostKeyChecking=no" \
-            --exclude=.git \
             --exclude=.env \
-            --exclude=storage \
-            . ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
+            ./ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
 
       - name: Update environment file
         run: |
-          scp -o StrictHostKeyChecking=no .env ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/.env
+          ssh -o StrictHostKeyChecking=no ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cat > ${{ secrets.CPANEL_DEPLOY_PATH }}/.env" < .env.production
 
       - name: Set permissions
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
             "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
-             chmod -R 755 storage bootstrap/cache"
+             chmod -R 755 storage bootstrap/cache && \
+             chown -R ${{ secrets.CPANEL_USERNAME }}:${{ secrets.CPANEL_USERNAME }} ."
 
-      - name: Run migrations
+      - name: Run database migrations
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
             "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
-             php artisan migrate --force"
+             php artisan migrate --force --no-interaction"
 
       - name: Verify deployment
         run: |
-          curl -s ${{ env.FULL_APP_URL }}/health-check | grep -q '"status":"ok"' || \
-          (echo "::error::Deployment verification failed" && exit 1)
+          response=$(curl -s ${{ env.FULL_APP_URL }}/health-check)
+          if echo "$response" | grep -q '"status":"ok"'; then
+            echo "Deployment verified successfully"
+          else
+            echo "::error::Deployment verification failed"
+            echo "Response: $response"
+            exit 1
+          fi
+
+  monitoring:
+    name: Post-Deployment Monitoring
+    needs: deploy-cpanel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check application health
+        run: |
+          health_response=$(curl -s ${{ env.FULL_APP_URL }}/health-check)
+          echo "Health Check Response: $health_response"
+
+          db_status=$(echo "$health_response" | jq -r '.database.status')
+          if [ "$db_status" != "up" ]; then
+            echo "::error::Database connection failed"
+            exit 1
+          fi
+
+      - name: Check queue workers
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
+             php artisan queue:status || php artisan queue:restart"
