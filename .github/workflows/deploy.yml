@@ -39,6 +39,16 @@ jobs:
           extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
           coverage: none
 
+      - name: Wait for MySQL
+        run: |
+          for i in {1..10}; do
+            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
+              echo "MySQL is ready!"
+              break
+            fi
+            sleep 5
+          done
+
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction
 
@@ -71,55 +81,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          # Write private key and ensure a final newline
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' | sed '$a\' > ~/.ssh/bvc_id_rsa
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
           chmod 600 ~/.ssh/bvc_id_rsa
-
-          # Generate public key from private key (for debugging or later use)
-          ssh-keygen -y -f ~/.ssh/bvc_id_rsa > ~/.ssh/bvc_id_rsa.pub
-
-          # Add host to known_hosts (remove duplicates)
-          ssh-keyscan -H ${{ secrets.CPANEL_HOST }} | tee -a ~/.ssh/known_hosts
-          sed -i '/^${{ secrets.CPANEL_HOST }} /!b;:l;N;${!b};s/\n\(.*\)\n\1/\n\1/;/^\n/d;bl' ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-          # Create SSH config
           cat >> ~/.ssh/config <<EOL
           Host ${{ secrets.CPANEL_HOST }}
             HostName ${{ secrets.CPANEL_HOST }}
             User ${{ secrets.CPANEL_USERNAME }}
             IdentityFile ~/.ssh/bvc_id_rsa
             IdentitiesOnly yes
-            PreferredAuthentications publickey
-            PubkeyAuthentication yes
-            StrictHostKeyChecking yes # Consider enabling for production
           EOL
-          chmod 600 ~/.ssh/config
-
-      - name: Debug SSH Configuration
-        if: failure() # Only run on failure for easier debugging
-        run: |
-          echo "=== Private Key Info ==="
-          ls -la ~/.ssh/bvc_id_rsa
-          echo "First 3 lines:"
-          head -n 3 ~/.ssh/bvc_id_rsa
-          echo "Last 3 lines:"
-          tail -n 3 ~/.ssh/bvc_id_rsa
-          echo -e "\n=== Public Key ==="
-          cat ~/.ssh/bvc_id_rsa.pub
-          echo -e "\n=== Known Hosts ==="
-          cat ~/.ssh/known_hosts
-          echo -e "\n=== SSH Config ==="
-          cat ~/.ssh/config
+          chmod 600 ~/.ssh/config # Added to ensure config file permissions
 
       - name: Test SSH Connection
-        run: ssh -v -T -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
-
-      - name: Install rsync
-        run: sudo apt-get update && sudo apt-get install -y rsync
+        run: ssh -T -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -160,24 +143,18 @@ jobs:
             --exclude=".env*" \
             . deployment/
           cp .env deployment/
-     
-      - name: Deploy via RSync
-        run: |
-          # Ensure rsync is installed (again, as a precaution)
-          sudo apt-get update
-          sudo apt-get install -y rsync
 
-          rsync -avz --delete \
-            -e "ssh -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa" \
-            --exclude=.git \
-            --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/ 
-      
+      - name: Deploy via RSync
+        run: /usr/bin/rsync -avz --delete \
+          -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+          --exclude=.git \
+          --exclude=.github \
+          deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
+
       - name: Run post-deployment commands
-        run: |
-          ssh -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
-            "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
-             php artisan config:clear && \
-             php artisan route:cache && \
-             php artisan view:cache && \
-             php artisan storage:link"
+        run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+          "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
+           php artisan config:clear && \
+           php artisan route:cache && \
+           php artisan view:cache && \
+           php artisan storage:link"
