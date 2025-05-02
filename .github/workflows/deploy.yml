@@ -83,9 +83,9 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/bvc_id_rsa
           chmod 600 ~/.ssh/bvc_id_rsa
-          echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          ssh-keyscan ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           cat >> ~/.ssh/config <<EOL
           Host ${{ secrets.CPANEL_HOST }}
@@ -95,17 +95,15 @@ jobs:
             IdentitiesOnly yes
           EOL
 
-
-
-      - name: Debug - Output Public Key from Secret
+      - name: Debug - Verify Private Key
         run: |
-          echo "$SSH_PRIVATE_KEY" | ssh-keygen -y -f -
-      
-
-
+          echo "Private key content (first 50 chars):"
+          head -c 50 ~/.ssh/bvc_id_rsa
+          echo -e "\n\nChecking key format..."
+          ssh-keygen -l -f ~/.ssh/bvc_id_rsa
 
       - name: Test SSH Connection
-        run: ssh -T ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} exit
+        run: ssh -v -T ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -151,10 +149,11 @@ jobs:
             --exclude=.github \
             deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
 
-      - name: Verify deployment
+      - name: Run post-deployment commands
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
             "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
              php artisan config:clear && \
              php artisan route:cache && \
-             php artisan view:cache"
+             php artisan view:cache && \
+             php artisan storage:link"
