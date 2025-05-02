@@ -2,9 +2,9 @@ name: Laravel API Deployment Pipeline
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 env:
   APP_ENV: production
@@ -28,124 +28,128 @@ jobs:
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup PHP
-      uses: shivammathur/setup-php@v2
-      with:
-        php-version: '8.2'
-        extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
-        coverage: none
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
+          coverage: none
 
-    - name: Wait for MySQL
-      run: |
-        for i in {1..10}; do
-          if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
-            echo "MySQL is ready!"
-            break
-          fi
-          sleep 5
-        done
+      - name: Wait for MySQL
+        run: |
+          for i in {1..10}; do
+            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
+              echo "MySQL is ready!"
+              break
+            fi
+            sleep 5
+          done
 
-    - name: Install dependencies
-      run: composer install --prefer-dist --no-interaction
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction
 
-    - name: Setup environment
-      run: |
-        cp .env.example .env
-        php artisan key:generate
-        sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
-        sed -i 's/^DB_HOST=.*/DB_HOST=127.0.0.1/' .env
-        sed -i 's/^DB_PORT=.*/DB_PORT=3306/' .env
-        sed -i 's/^DB_DATABASE=.*/DB_DATABASE=laravel_test/' .env
-        sed -i 's/^DB_USERNAME=.*/DB_USERNAME=root/' .env
-        sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=secret/' .env
-        echo "APP_ENV=testing" >> .env
-        php artisan config:clear
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+          sed -i 's/^DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+          sed -i 's/^DB_PORT=.*/DB_PORT=3306/' .env
+          sed -i 's/^DB_DATABASE=.*/DB_DATABASE=laravel_test/' .env
+          sed -i 's/^DB_USERNAME=.*/DB_USERNAME=root/' .env
+          sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=secret/' .env
+          echo "APP_ENV=testing" >> .env
+          php artisan config:clear
 
-    - name: Run migrations
-      run: php artisan migrate:fresh --force
+      - name: Run migrations
+        run: php artisan migrate:fresh --force
 
-    - name: Execute tests
-      run: php artisan test
+      - name: Execute tests
+        run: php artisan test
 
   deploy:
     name: Deploy to Production
     needs: tests
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configure SSH
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/bvc_id_rsa
-        chmod 600 ~/.ssh/bvc_id_rsa
-        echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-        chmod 644 ~/.ssh/known_hosts
-        cat >> ~/.ssh/config <<EOL
-        Host ${{ secrets.CPANEL_HOST }}
-          HostName ${{ secrets.CPANEL_HOST }}
-          User ${{ secrets.CPANEL_USERNAME }}
-          IdentityFile ~/.ssh/bvc_id_rsa
-          IdentitiesOnly yes
-        EOL
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
+          chmod 600 ~/.ssh/bvc_id_rsa
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<EOL
+          Host ${{ secrets.CPANEL_HOST }}
+            HostName ${{ secrets.CPANEL_HOST }}
+            User ${{ secrets.CPANEL_USERNAME }}
+            IdentityFile ~/.ssh/bvc_id_rsa
+            IdentitiesOnly yes
+          EOL
 
-    - name: Test SSH Connection
-      run: ssh -T ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} exit
+      - name: Debug - Output Public Key from Secret
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | ssh-keygen -y -f -
 
-    - name: Setup PHP
-      uses: shivammathur/setup-php@v2
-      with:
-        php-version: '8.2'
-        extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
+      - name: Test SSH Connection
+        run: ssh -T ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} exit
 
-    - name: Install dependencies
-      run: |
-        composer install --no-dev --prefer-dist --optimize-autoloader
-        composer dump-autoload -o
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
 
-    - name: Setup environment
-      run: |
-        cp .env.example .env
-        echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
-        echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
-        echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
-        echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
-        echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
-        php artisan config:cache
+      - name: Install dependencies
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader
+          composer dump-autoload -o
 
-    - name: Create deployment package
-      run: |
-        mkdir -p deployment
-        rsync -av --delete \
-          --exclude=.git \
-          --exclude=.github \
-          --exclude=node_modules \
-          --exclude=tests \
-          --exclude=storage/logs \
-          --exclude=storage/framework/cache \
-          --exclude=storage/framework/sessions \
-          --exclude=storage/framework/views \
-          . deployment/
-        cp .env deployment/
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
+          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
+          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
+          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+          php artisan config:cache
 
-    - name: Deploy via RSync
-      run: |
-        rsync -avz --delete \
-          -e "ssh -o StrictHostKeyChecking=no" \
-          --exclude=.git \
-          --exclude=.github \
-          deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
+      - name: Create deployment package
+        run: |
+          mkdir -p deployment
+          rsync -av --delete \
+            --exclude=.git \
+            --exclude=.github \
+            --exclude=node_modules \
+            --exclude=tests \
+            --exclude=storage/logs \
+            --exclude=storage/framework/cache \
+            --exclude=storage/framework/sessions \
+            --exclude=storage/framework/views \
+            . deployment/
+          cp .env deployment/
 
-    - name: Verify deployment
-      run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
-          "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
-           php artisan config:clear && \
-           php artisan route:cache && \
-           php artisan view:cache"
+      - name: Deploy via RSync
+        run: |
+          rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
+
+      - name: Verify deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
+             php artisan config:clear && \
+             php artisan route:cache && \
+             php artisan view:cache"
