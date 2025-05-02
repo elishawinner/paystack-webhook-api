@@ -71,6 +71,8 @@ jobs:
       - name: Execute tests
         run: php artisan test
 
+  
+
   deploy:
     name: Deploy to Production
     needs: tests
@@ -91,7 +93,6 @@ jobs:
           chmod 600 ~/.ssh/bvc_id_rsa
           ssh-keyscan -H ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-
           cat >> ~/.ssh/config <<EOL
           Host ${{ secrets.CPANEL_HOST }}
             HostName ${{ secrets.CPANEL_HOST }}
@@ -99,10 +100,15 @@ jobs:
             IdentityFile ~/.ssh/bvc_id_rsa
             IdentitiesOnly yes
           EOL
-          chmod 600 ~/.ssh/config # Added to ensure config file permissions
+          chmod 600 ~/.ssh/config
 
       - name: Test SSH Connection
         run: ssh -T -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
+
+      - name: Debug - Check rsync Installation
+        run: |
+          which rsync
+          dpkg -s rsync
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -145,11 +151,13 @@ jobs:
           cp .env deployment/
 
       - name: Deploy via RSync
-        run: /usr/bin/rsync -avz --delete \
-          -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
-          --exclude=.git \
-          --exclude=.github \
-          deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
+        run: |
+          export PATH=$PATH:/usr/bin
+          /usr/bin/rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
 
       - name: Run post-deployment commands
         run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
