@@ -82,51 +82,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy with Guaranteed rsync
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Configure SSH
         run: |
-          # Create a wrapper script
-          cat << 'EOF' > deploy.sh
-          #!/bin/bash
-          set -e
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
+          chmod 600 ~/.ssh/bvc_id_rsa
+          ssh-keyscan -H ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<EOL
+          Host ${{ secrets.CPANEL_HOST }}
+            HostName ${{ secrets.CPANEL_HOST }}
+            User ${{ secrets.CPANEL_USERNAME }}
+            IdentityFile ~/.ssh/bvc_id_rsa
+            IdentitiesOnly yes
+          EOL
+          chmod 600 ~/.ssh/config
 
-          # 1. Attempt rsync installation with a clean environment
-          echo "Attempting rsync installation..."
-          sudo rm -rf /var/lib/apt/lists/*
-          sudo apt-get clean -y
-          sudo apt-get update -y
-          sudo apt-get install -y --reinstall rsync
-
-          # 2. Verify installation and try alternative installation if needed
-          if ! which rsync > /dev/null; then
-            echo "rsync not found via apt, trying alternative installation..."
-            # Try installing from source (less common, but a fallback)
-            #  wget https://ftp.samba.org/pub/rsync/rsync-3.2.7.tar.gz # Replace with latest version
-            #  tar -xzf rsync-3.2.7.tar.gz
-            #  cd rsync-3.2.7
-            #  ./configure
-            #  make
-            #  sudo make install
-             echo "::error:: rsync installation failed"
-             exit 1
-          fi
-
-          # 3. Debugging
-          echo "rsync version: $(/usr/bin/rsync --version)"
-          echo "PATH: $PATH"
-          echo "Listing /usr/bin:"
-          ls -l /usr/bin | grep rsync
-
-          # 4. Execute rsync
-          echo "Deploying with rsync..."
-          /usr/bin/rsync -avz --delete \
-            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
-            --exclude=.git \
-            --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
-          EOF
-
-          chmod +x deploy.sh
-          ./deploy.sh
+      - name: Test SSH Connection
+        run: |
+          ssh -T -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -148,6 +125,33 @@ jobs:
           echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
           echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
           php artisan config:cache
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deployment
+          rsync -av --delete \
+            --exclude=.git \
+            --exclude=.github \
+            --exclude=node_modules \
+            --exclude=tests \
+            --exclude=storage/logs \
+            --exclude=storage/framework/cache \
+            --exclude=storage/framework/sessions \
+            --exclude=storage/framework/views \
+            --exclude=bootstrap/cache \
+            --exclude=public/storage \
+            --exclude="*.sqlite" \
+            --exclude=".env*" \
+            . deployment/
+          cp .env deployment/
+
+      - name: Deploy via RSync
+        run: |
+          /usr/bin/rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
 
       - name: Run post-deployment commands
         run: |
