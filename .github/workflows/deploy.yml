@@ -95,9 +95,15 @@ jobs:
             IdentitiesOnly yes
           EOL
 
+
+
       - name: Debug - Output Public Key from Secret
         run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | ssh-keygen -y -f -
+          echo "$SSH_PRIVATE_KEY" | ssh-keygen -y -f -
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+
 
       - name: Test SSH Connection
         run: ssh -T ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} exit
