@@ -100,8 +100,7 @@ jobs:
       - name: Debug - Output Public Key from Secret
         run: |
           echo "$SSH_PRIVATE_KEY" | ssh-keygen -y -f -
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      
 
 
 
