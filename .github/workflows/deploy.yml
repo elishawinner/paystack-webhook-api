@@ -145,11 +145,21 @@ jobs:
           cp .env deployment/
 
       - name: Deploy via RSync
-        run: /usr/bin/rsync -avz --delete \
-          -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
-          --exclude=.git \
-          --exclude=.github \
-          deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
+        run: |
+          # Ensure rsync is installed and then execute the deployment
+          if ! command -v rsync &> /dev/null; then
+            echo "rsync not found, installing..."
+            sudo apt-get update
+            sudo apt-get install -y rsync
+          else
+            echo "rsync found at $(which rsync)"
+          fi
+
+          /usr/bin/rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
 
       - name: Run post-deployment commands
         run: |
