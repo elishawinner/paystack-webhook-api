@@ -69,8 +69,119 @@ jobs:
 
       - name: Execute tests
         run: php artisan test
-
   deploy:
+    name: Deploy to Production
+    needs: tests
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          # Write private key and ensure a final newline
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' | sed '$a\' > ~/.ssh/bvc_id_rsa
+          chmod 600 ~/.ssh/bvc_id_rsa
+
+          # Generate public key from private key (for debugging or later use)
+          ssh-keygen -y -f ~/.ssh/bvc_id_rsa > ~/.ssh/bvc_id_rsa.pub
+
+          # Add host to known_hosts (remove duplicates)
+          ssh-keyscan -H ${{ secrets.CPANEL_HOST }} | tee -a ~/.ssh/known_hosts
+          sed -i '/^${{ secrets.CPANEL_HOST }} /!b;:l;N;${!b};s/\n\(.*\)\n\1/\n\1/;/^\n/d;bl' ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          # Create SSH config
+          cat >> ~/.ssh/config <<EOL
+          Host ${{ secrets.CPANEL_HOST }}
+            HostName ${{ secrets.CPANEL_HOST }}
+            User ${{ secrets.CPANEL_USERNAME }}
+            IdentityFile ~/.ssh/bvc_id_rsa
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            PubkeyAuthentication yes
+            StrictHostKeyChecking yes # Consider enabling for production
+          EOL
+          chmod 600 ~/.ssh/config
+
+      - name: Debug SSH Configuration
+        run: |
+          echo "=== Private Key Info ==="
+          ls -la ~/.ssh/bvc_id_rsa
+          echo "First 3 lines:"
+          head -n 3 ~/.ssh/bvc_id_rsa
+          echo "Last 3 lines:"
+          tail -n 3 ~/.ssh/bvc_id_rsa
+          echo -e "\n=== Public Key ==="
+          cat ~/.ssh/bvc_id_rsa.pub
+          echo -e "\n=== Known Hosts ==="
+          cat ~/.ssh/known_hosts
+          echo -e "\n=== SSH Config ==="
+          cat ~/.ssh/config
+
+      - name: Test SSH Connection
+        run: ssh -v -T -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
+
+      - name: Install dependencies
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader
+          composer dump-autoload -o
+
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
+          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
+          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
+          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+          php artisan config:cache
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deployment
+          rsync -av --delete \
+            --exclude=.git \
+            --exclude=.github \
+            --exclude=node_modules \
+            --exclude=tests \
+            --exclude=storage/logs \
+            --exclude=storage/framework/cache \
+            --exclude=storage/framework/sessions \
+            --exclude=storage/framework/views \
+            --exclude=bootstrap/cache \
+            --exclude=public/storage \
+            --exclude="*.sqlite" \
+            --exclude=".env*" \
+            . deployment/
+          cp .env deployment/
+
+      - name: Deploy via RSync
+        run: |
+          rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
+
+      - name: Run post-deployment commands
+        run: |
+          ssh -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
+             php artisan config:clear && \
+             php artisan route:cache && \
+             php artisan view:cache && \
+             php artisan storage:link"
+
     name: Deploy to Production
     needs: tests
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
