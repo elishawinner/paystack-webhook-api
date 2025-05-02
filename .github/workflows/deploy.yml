@@ -88,25 +88,34 @@ jobs:
           cat << 'EOF' > deploy.sh
           #!/bin/bash
           set -e
-          
-          # 1. Force install rsync with a clean environment
+
+          # 1. Attempt rsync installation with a clean environment
+          echo "Attempting rsync installation..."
           sudo rm -rf /var/lib/apt/lists/*
           sudo apt-get clean -y
           sudo apt-get update -y
           sudo apt-get install -y --reinstall rsync
-          
-          # 2. Verify installation
+
+          # 2. Verify installation and try alternative installation if needed
           if ! which rsync > /dev/null; then
-            echo "::error::rsync is missing after installation"
-            exit 1
+            echo "rsync not found via apt, trying alternative installation..."
+            # Try installing from source (less common, but a fallback)
+            #  wget https://ftp.samba.org/pub/rsync/rsync-3.2.7.tar.gz # Replace with latest version
+            #  tar -xzf rsync-3.2.7.tar.gz
+            #  cd rsync-3.2.7
+            #  ./configure
+            #  make
+            #  sudo make install
+             echo "::error:: rsync installation failed"
+             exit 1
           fi
-          
+
           # 3. Debugging
-          echo "rsync version: $(rsync --version)"
+          echo "rsync version: $(/usr/bin/rsync --version)"
           echo "PATH: $PATH"
           echo "Listing /usr/bin:"
           ls -l /usr/bin | grep rsync
-          
+
           # 4. Execute rsync
           echo "Deploying with rsync..."
           /usr/bin/rsync -avz --delete \
@@ -115,7 +124,7 @@ jobs:
             --exclude=.github \
             deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
           EOF
-          
+
           chmod +x deploy.sh
           ./deploy.sh
 
