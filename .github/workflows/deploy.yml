@@ -160,15 +160,19 @@ jobs:
             --exclude=".env*" \
             . deployment/
           cp .env deployment/
-
+     
       - name: Deploy via RSync
         run: |
+          # Ensure rsync is installed (again, as a precaution)
+          sudo apt-get update
+          sudo apt-get install -y rsync
+
           rsync -avz --delete \
             -e "ssh -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa" \
             --exclude=.git \
             --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
-
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/ 
+      
       - name: Run post-deployment commands
         run: |
           ssh -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
