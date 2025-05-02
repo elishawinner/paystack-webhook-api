@@ -82,27 +82,37 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install rsync
-        run: sudo apt-get update && sudo apt-get install -y rsync
-
-      - name: Configure SSH
+      - name: Deploy with Guaranteed rsync
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
-          chmod 600 ~/.ssh/bvc_id_rsa
-          ssh-keyscan -H ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          cat >> ~/.ssh/config <<EOL
-          Host ${{ secrets.CPANEL_HOST }}
-            HostName ${{ secrets.CPANEL_HOST }}
-            User ${{ secrets.CPANEL_USERNAME }}
-            IdentityFile ~/.ssh/bvc_id_rsa
-            IdentitiesOnly yes
-          EOL
-          chmod 600 ~/.ssh/config
+          # Create a wrapper script that handles all edge cases
+          cat << 'EOF' > deploy.sh
+          #!/bin/bash
+          set -e
 
-      - name: Test SSH Connection
-        run: ssh -T -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
+          # 1. Force install rsync with clean environment
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          sudo apt-get update -y
+          sudo apt-get install -y rsync
+
+          # 2. Verify installation absolutely
+          if [ ! -f /usr/bin/rsync ]; then
+            echo "::error::rsync binary missing after installation!"
+            exit 1
+          fi
+
+          # 3. Use absolute path with direct execution
+          echo "Deploying with rsync..."
+          /usr/bin/rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
+          EOF
+
+          # Make executable and run in isolated context
+          chmod +x deploy.sh
+          ./deploy.sh
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -124,42 +134,6 @@ jobs:
           echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
           echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
           php artisan config:cache
-
-      - name: Create deployment package
-        run: |
-          mkdir -p deployment
-          rsync -av --delete \
-            --exclude=.git \
-            --exclude=.github \
-            --exclude=node_modules \
-            --exclude=tests \
-            --exclude=storage/logs \
-            --exclude=storage/framework/cache \
-            --exclude=storage/framework/sessions \
-            --exclude=storage/framework/views \
-            --exclude=bootstrap/cache \
-            --exclude=public/storage \
-            --exclude="*.sqlite" \
-            --exclude=".env*" \
-            . deployment/
-          cp .env deployment/
-
-      - name: Deploy via RSync
-        run: |
-          # Ensure rsync is installed and then execute the deployment
-          if ! command -v rsync &> /dev/null; then
-            echo "rsync not found, installing..."
-            sudo apt-get update
-            sudo apt-get install -y rsync
-          else
-            echo "rsync found at $(which rsync)"
-          fi
-
-          /usr/bin/rsync -avz --delete \
-            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
-            --exclude=.git \
-            --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
 
       - name: Run post-deployment commands
         run: |
