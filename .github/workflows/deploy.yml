@@ -12,7 +12,7 @@ env:
   PRIMARY_DOMAIN: ${{ secrets.PRIMARY_DOMAIN }}
   APP_SUBDOMAIN: ${{ secrets.APP_SUBDOMAIN }}
   DB_CONNECTION: mysql
-  COMPOSER_PROCESS_TIMEOUT: 300 # Increased timeout in seconds
+  COMPOSER_PROCESS_TIMEOUT: 300
 
 jobs:
   tests:
@@ -39,16 +39,6 @@ jobs:
           extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
           coverage: none
 
-      - name: Wait for MySQL
-        run: |
-          for i in {1..10}; do
-            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
-              echo "MySQL is ready!"
-              break
-            fi
-            sleep 5
-          done
-
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction
 
@@ -71,8 +61,6 @@ jobs:
       - name: Execute tests
         run: php artisan test
 
-  
-
   deploy:
     name: Deploy to Production
     needs: tests
@@ -83,32 +71,39 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install rsync
-        run: sudo apt-get update && sudo apt-get install -y rsync
+      - name: Install rsync and SSH client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y rsync openssh-client
+          /usr/bin/rsync --version
 
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/bvc_id_rsa
           chmod 600 ~/.ssh/bvc_id_rsa
+          
+          # Generate public key for verification
+          ssh-keygen -y -f ~/.ssh/bvc_id_rsa > ~/.ssh/bvc_id_rsa.pub
+          
+          # Add host to known_hosts
           ssh-keyscan -H ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          
+          # Create SSH config
           cat >> ~/.ssh/config <<EOL
           Host ${{ secrets.CPANEL_HOST }}
             HostName ${{ secrets.CPANEL_HOST }}
             User ${{ secrets.CPANEL_USERNAME }}
             IdentityFile ~/.ssh/bvc_id_rsa
             IdentitiesOnly yes
+            PreferredAuthentications publickey
+            PubkeyAuthentication yes
           EOL
           chmod 600 ~/.ssh/config
 
-      - name: Test SSH Connection
-        run: ssh -T -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
-
-      - name: Debug - Check rsync Installation
-        run: |
-          which rsync
-          dpkg -s rsync
+      - name: Verify SSH connection
+        run: ssh -v -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} exit
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -146,13 +141,11 @@ jobs:
             --exclude=bootstrap/cache \
             --exclude=public/storage \
             --exclude="*.sqlite" \
-            --exclude=".env*" \
             . deployment/
           cp .env deployment/
 
       - name: Deploy via RSync
         run: |
-          export PATH=$PATH:/usr/bin
           /usr/bin/rsync -avz --delete \
             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
             --exclude=.git \
@@ -160,9 +153,15 @@ jobs:
             deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ secrets.CPANEL_DEPLOY_PATH }}/
 
       - name: Run post-deployment commands
-        run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
-          "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
-           php artisan config:clear && \
-           php artisan route:cache && \
-           php artisan view:cache && \
-           php artisan storage:link"
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && \
+             php artisan config:clear && \
+             php artisan route:cache && \
+             php artisan view:cache && \
+             php artisan storage:link"
+
+      - name: Verify deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cd ${{ secrets.CPANEL_DEPLOY_PATH }} && ls -la && php artisan --version"
