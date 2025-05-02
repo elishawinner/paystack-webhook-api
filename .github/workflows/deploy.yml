@@ -12,8 +12,8 @@ env:
   PRIMARY_DOMAIN: ${{ secrets.PRIMARY_DOMAIN }}
   APP_SUBDOMAIN: ${{ secrets.APP_SUBDOMAIN }}
   DB_CONNECTION: mysql
-  COMPOSER_PROCESS_TIMEOUT: 300 # Increased timeout in seconds
-  DEPLOYMENT_PATH: ${{ secrets.CPANEL_DEPLOY_PATH }} # Standardized variable
+  COMPOSER_PROCESS_TIMEOUT: 300
+  DEPLOYMENT_PATH: ${{ secrets.CPANEL_DEPLOY_PATH }}
 
 jobs:
   tests:
@@ -84,33 +84,38 @@ jobs:
 
       - name: Deploy with Guaranteed rsync
         run: |
-          # Create a wrapper script that handles all edge cases
+          # Create a wrapper script
           cat << 'EOF' > deploy.sh
           #!/bin/bash
           set -e
-
-          # 1. Force install rsync with clean environment
+          
+          # 1. Force install rsync with a clean environment
           sudo rm -rf /var/lib/apt/lists/*
-          sudo apt-get clean
+          sudo apt-get clean -y
           sudo apt-get update -y
-          sudo apt-get install -y rsync
-
-          # 2. Verify installation absolutely
-          if [ ! -f /usr/bin/rsync ]; then
-            echo "::error::rsync binary missing after installation!"
+          sudo apt-get install -y --reinstall rsync
+          
+          # 2. Verify installation
+          if ! which rsync > /dev/null; then
+            echo "::error::rsync is missing after installation"
             exit 1
           fi
-
-          # 3. Use absolute path with direct execution
+          
+          # 3. Debugging
+          echo "rsync version: $(rsync --version)"
+          echo "PATH: $PATH"
+          echo "Listing /usr/bin:"
+          ls -l /usr/bin | grep rsync
+          
+          # 4. Execute rsync
           echo "Deploying with rsync..."
           /usr/bin/rsync -avz --delete \
             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
             --exclude=.git \
             --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
           EOF
-
-          # Make executable and run in isolated context
+          
           chmod +x deploy.sh
           ./deploy.sh
 
