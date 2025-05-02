@@ -12,6 +12,7 @@ env:
   PRIMARY_DOMAIN: ${{ secrets.PRIMARY_DOMAIN }}
   APP_SUBDOMAIN: ${{ secrets.APP_SUBDOMAIN }}
   DB_CONNECTION: mysql
+  COMPOSER_PROCESS_TIMEOUT: 300 # Increased timeout in seconds
 
 jobs:
   tests:
@@ -38,16 +39,6 @@ jobs:
           extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
           coverage: none
 
-      - name: Wait for MySQL
-        run: |
-          for i in {1..10}; do
-            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
-              echo "MySQL is ready!"
-              break
-            fi
-            sleep 5
-          done
-
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction
 
@@ -69,6 +60,7 @@ jobs:
 
       - name: Execute tests
         run: php artisan test
+
   deploy:
     name: Deploy to Production
     needs: tests
@@ -108,6 +100,7 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Debug SSH Configuration
+        if: failure() # Only run on failure for easier debugging
         run: |
           echo "=== Private Key Info ==="
           ls -la ~/.ssh/bvc_id_rsa
@@ -124,6 +117,9 @@ jobs:
 
       - name: Test SSH Connection
         run: ssh -v -T -o StrictHostKeyChecking=yes -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -181,5 +177,3 @@ jobs:
              php artisan route:cache && \
              php artisan view:cache && \
              php artisan storage:link"
-
-    
