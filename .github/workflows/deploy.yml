@@ -1,39 +1,43 @@
-- name: Deploy with Guaranteed rsync
-        run: |
-          # Create a wrapper script
-          cat << 'EOF' > deploy.sh
-          #!/bin/bash
-          set -e
+name: Deploy to cPanel
 
-          # 1. Force install rsync with a clean environment
-          sudo rm -rf /var/lib/apt/lists/*
-          sudo apt-get clean -y
-          sudo apt-get update -y
-          sudo apt-get install -y --reinstall rsync
+on:
+  push:
+    branches:
+      - main # Or your main branch name
 
-          # 2. Verify installation and PATH
-          if ! which rsync > /dev/null; then
-            echo "::error::rsync is missing after installation"
-            exit 1
-          fi
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-          echo "Current PATH: $PATH"
-          which rsync
-          /usr/bin/rsync --version
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1' # Or your required PHP version
+          extensions: pdo, mysql, mbstring, xml, ctype, json
 
-          # 3. Debugging directory listing
-          echo "Listing /usr/bin:"
-          ls -l /usr/bin | grep rsync
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader
 
-          # 4. Execute rsync using the full path
-          echo "Deploying with rsync..."
-          /usr/bin/rsync -avz --delete \
-            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
-            --exclude=.git \
-            --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
-          EOF
+      - name: Copy files to cPanel
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.CPANEL_HOST }}
+          username: ${{ secrets.CPANEL_USERNAME }}
+          password: ${{ secrets.CPANEL_PASSWORD }}
+          remote_path: /home/${{ secrets.CPANEL_USERNAME }}/your-subdomain.com # Adjust the path
+          source: .
 
-          chmod +x deploy.sh
-          ./deploy.sh
+      - name: Run migrations and seeders
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.CPANEL_HOST }}
+          username: ${{ secrets.CPANEL_USERNAME }}
+          password: ${{ secrets.CPANEL_PASSWORD }}
+          script: |
+            cd /home/${{ secrets.CPANEL_USERNAME }}/your-subdomain.com
+            php artisan migrate --force
+            php artisan db:seed --force
+            php artisan optimize:clear
