@@ -1,163 +1,39 @@
-name: Laravel API Deployment Pipeline
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
-
-env:
-  APP_ENV: production
-  APP_DEBUG: false
-  PRIMARY_DOMAIN: ${{ secrets.PRIMARY_DOMAIN }}
-  APP_SUBDOMAIN: ${{ secrets.APP_SUBDOMAIN }}
-  DB_CONNECTION: mysql
-  COMPOSER_PROCESS_TIMEOUT: 300
-  DEPLOYMENT_PATH: ${{ secrets.CPANEL_DEPLOY_PATH }}
-
-jobs:
-  tests:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: secret
-          MYSQL_DATABASE: laravel_test
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
-          coverage: none
-
-      - name: Wait for MySQL
+- name: Deploy with Guaranteed rsync
         run: |
-          for i in {1..10}; do
-            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
-              echo "MySQL is ready!"
-              break
-            fi
-            sleep 5
-          done
+          # Create a wrapper script
+          cat << 'EOF' > deploy.sh
+          #!/bin/bash
+          set -e
 
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-interaction
+          # 1. Force install rsync with a clean environment
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean -y
+          sudo apt-get update -y
+          sudo apt-get install -y --reinstall rsync
 
-      - name: Setup environment
-        run: |
-          cp .env.example .env
-          php artisan key:generate
-          sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
-          sed -i 's/^DB_HOST=.*/DB_HOST=127.0.0.1/' .env
-          sed -i 's/^DB_PORT=.*/DB_PORT=3306/' .env
-          sed -i 's/^DB_DATABASE=.*/DB_DATABASE=laravel_test/' .env
-          sed -i 's/^DB_USERNAME=.*/DB_USERNAME=root/' .env
-          sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=secret/' .env
-          echo "APP_ENV=testing" >> .env
-          php artisan config:clear
+          # 2. Verify installation and PATH
+          if ! which rsync > /dev/null; then
+            echo "::error::rsync is missing after installation"
+            exit 1
+          fi
 
-      - name: Run migrations
-        run: php artisan migrate:fresh --force
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          echo "Current PATH: $PATH"
+          which rsync
+          /usr/bin/rsync --version
 
-      - name: Execute tests
-        run: php artisan test
+          # 3. Debugging directory listing
+          echo "Listing /usr/bin:"
+          ls -l /usr/bin | grep rsync
 
-  deploy:
-    name: Deploy to Production
-    needs: tests
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install rsync
-        run: sudo apt-get update && sudo apt-get install -y rsync
-
-      - name: Configure SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/bvc_id_rsa
-          chmod 600 ~/.ssh/bvc_id_rsa
-          ssh-keyscan -H ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          cat >> ~/.ssh/config <<EOL
-          Host ${{ secrets.CPANEL_HOST }}
-            HostName ${{ secrets.CPANEL_HOST }}
-            User ${{ secrets.CPANEL_USERNAME }}
-            IdentityFile ~/.ssh/bvc_id_rsa
-            IdentitiesOnly yes
-          EOL
-          chmod 600 ~/.ssh/config
-
-      - name: Test SSH Connection
-        run: |
-          ssh -T -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} echo "SSH connection successful"
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
-
-      - name: Install dependencies
-        run: |
-          composer install --no-dev --prefer-dist --optimize-autoloader
-          composer dump-autoload -o
-
-      - name: Setup environment
-        run: |
-          cp .env.example .env
-          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
-          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
-          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
-          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
-          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
-          php artisan config:cache
-
-      - name: Create deployment package
-        run: |
-          mkdir -p deployment
-          rsync -av --delete \
-            --exclude=.git \
-            --exclude=.github \
-            --exclude=node_modules \
-            --exclude=tests \
-            --exclude=storage/logs \
-            --exclude=storage/framework/cache \
-            --exclude=storage/framework/sessions \
-            --exclude=storage/framework/views \
-            --exclude=bootstrap/cache \
-            --exclude=public/storage \
-            --exclude="*.sqlite" \
-            --exclude=".env*" \
-            . deployment/
-          cp .env deployment/
-
-      - name: Deploy via RSync
-        run: |
+          # 4. Execute rsync using the full path
+          echo "Deploying with rsync..."
           /usr/bin/rsync -avz --delete \
             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
             --exclude=.git \
             --exclude=.github \
             deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
+          EOF
 
-      - name: Run post-deployment commands
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
-            "cd ${{ env.DEPLOYMENT_PATH }} && \
-             php artisan config:clear && \
-             php artisan route:cache && \
-             php artisan view:cache && \
-             php artisan storage:link"
+          chmod +x deploy.sh
+          ./deploy.sh
