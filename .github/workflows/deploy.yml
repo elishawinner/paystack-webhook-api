@@ -1,13 +1,34 @@
-name: Deploy to cPanel
+name: Laravel API Deployment Pipeline
 
 on:
   push:
-    branches:
-      - main # Or your main branch name
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  APP_ENV: production
+  APP_DEBUG: false
+  PRIMARY_DOMAIN: ${{ secrets.PRIMARY_DOMAIN }}
+  APP_SUBDOMAIN: ${{ secrets.APP_SUBDOMAIN }}
+  DB_CONNECTION: mysql
+  COMPOSER_PROCESS_TIMEOUT: 300
+  DEPLOYMENT_PATH: ${{ secrets.CPANEL_DEPLOY_PATH }}
 
 jobs:
-  deploy:
+  tests:
+    name: Run Tests
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: secret
+          MYSQL_DATABASE: laravel_test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -15,29 +36,99 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.1' # Or your required PHP version
-          extensions: pdo, mysql, mbstring, xml, ctype, json
+          php-version: '8.2' # Updated to PHP 8.2
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
+          coverage: none
 
-      - name: Install Composer dependencies
-        run: composer install --no-dev --optimize-autoloader
+      - name: Wait for MySQL
+        run: |
+          for i in {1..10}; do
+            if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
+              echo "MySQL is ready!"
+              break
+            fi
+            sleep 5
+          done
 
-      - name: Copy files to cPanel
-        uses: appleboy/scp-action@master
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --optimize-autoloader
+
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+          sed -i 's/^DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+          sed -i 's/^DB_PORT=.*/DB_PORT=3306/' .env
+          sed -i 's/^DB_DATABASE=.*/DB_DATABASE=laravel_test/' .env
+          sed -i 's/^DB_USERNAME=.*/DB_USERNAME=root/' .env
+          sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=secret/' .env
+          echo "APP_ENV=testing" >> .env
+          php artisan config:clear
+
+      - name: Run migrations
+        run: php artisan migrate:fresh --force
+
+      - name: Execute tests
+        run: php artisan test
+
+  deploy:
+    name: Deploy to Production
+    needs: tests
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy with rsync
+        run: |
+          cat << 'EOF' > deploy.sh
+          #!/bin/bash
+          set -e
+
+          if ! command -v rsync &> /dev/null; then
+            echo "::error::rsync is not installed or not in PATH."
+            exit 1
+          fi
+
+          echo "Deploying with rsync..."
+          rsync -avz --delete \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
+            --exclude=.git \
+            --exclude=.github \
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
+          EOF
+          chmod +x deploy.sh
+          ./deploy.sh
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
         with:
-          host: ${{ secrets.CPANEL_HOST }}
-          username: ${{ secrets.CPANEL_USERNAME }}
-          password: ${{ secrets.CPANEL_PASSWORD }}
-          remote_path: /home/${{ secrets.CPANEL_USERNAME }}/your-subdomain.com # Adjust the path
-          source: .
+          php-version: '8.2' # Updated to PHP 8.2
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
 
-      - name: Run migrations and seeders
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.CPANEL_HOST }}
-          username: ${{ secrets.CPANEL_USERNAME }}
-          password: ${{ secrets.CPANEL_PASSWORD }}
-          script: |
-            cd /home/${{ secrets.CPANEL_USERNAME }}/your-subdomain.com
-            php artisan migrate --force
-            php artisan db:seed --force
-            php artisan optimize:clear
+      - name: Install dependencies
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader
+          composer dump-autoload -o
+
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
+          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
+          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
+          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+          php artisan config:cache
+
+      - name: Run post-deployment commands
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
+            "cd ${{ env.DEPLOYMENT_PATH }} && \
+             php artisan config:clear && \
+             php artisan route:cache && \
+             php artisan view:cache && \
+             php artisan storage:link"
