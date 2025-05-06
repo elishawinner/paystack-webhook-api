@@ -45,10 +45,12 @@ jobs:
           for i in {1..10}; do
             if mysqladmin ping -h"127.0.0.1" -uroot -psecret --silent; then
               echo "MySQL is ready!"
-              break
+              exit 0
             fi
             sleep 5
           done
+          echo "MySQL failed to start."
+          exit 1
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-interaction --optimize-autoloader
@@ -89,6 +91,10 @@ jobs:
           chmod 600 ~/.ssh/bvc_id_rsa
           ssh-keyscan ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
 
+      - name: Install dependencies locally (before rsync)
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader
+
       - name: Deploy with rsync
         run: |
           cat << 'EOF' > deploy.sh
@@ -105,37 +111,18 @@ jobs:
             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
             --exclude=.git \
             --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
+            . ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
           EOF
           chmod +x deploy.sh
           ./deploy.sh
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
-
-      - name: Install dependencies
-        run: |
-          composer install --no-dev --prefer-dist --optimize-autoloader
-          composer dump-autoload -o
-
-      - name: Setup environment
-        run: |
-          cp .env.example .env
-          echo "APP_KEY=${{ secrets.APP_KEY }}" >> .env
-          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
-          echo "DB_DATABASE=${{ secrets.DB_DATABASE }}" >> .env
-          echo "DB_USERNAME=${{ secrets.DB_USERNAME }}" >> .env
-          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
-          php artisan config:cache
 
       - name: Run post-deployment commands
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }} \
             "cd ${{ env.DEPLOYMENT_PATH }} && \
+             composer install --no-dev --prefer-dist --optimize-autoloader && \
              php artisan config:clear && \
+             php artisan config:cache && \
              php artisan route:cache && \
              php artisan view:cache && \
              php artisan storage:link"
