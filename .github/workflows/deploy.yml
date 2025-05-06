@@ -36,7 +36,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2' # Updated to PHP 8.2
+          php-version: '8.2'
           extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
           coverage: none
 
@@ -82,6 +82,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/bvc_id_rsa
+          chmod 600 ~/.ssh/bvc_id_rsa
+          ssh-keyscan ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
+
       - name: Deploy with rsync
         run: |
           cat << 'EOF' > deploy.sh
@@ -106,7 +113,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2' # Updated to PHP 8.2
+          php-version: '8.2'
           extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
 
       - name: Install dependencies
