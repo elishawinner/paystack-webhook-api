@@ -37,7 +37,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
           coverage: none
 
       - name: Wait for MySQL
@@ -51,7 +51,7 @@ jobs:
           done
 
       - name: Install dependencies
-        run: composer install --prefer-dist --no-interaction --optimize-autoloader
+        run: composer install --prefer-dist --no-interaction
 
       - name: Setup environment
         run: |
@@ -82,31 +82,43 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup SSH Key
+      - name: Deploy with Guaranteed rsync
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/bvc_id_rsa
-          chmod 600 ~/.ssh/bvc_id_rsa
-          ssh-keyscan ${{ secrets.CPANEL_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Deploy with rsync
-        run: |
+          # Create a wrapper script
           cat << 'EOF' > deploy.sh
           #!/bin/bash
           set -e
 
-          if ! command -v rsync &> /dev/null; then
-            echo "::error::rsync is not installed or not in PATH."
+          # 1. Force install rsync with a clean environment
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean -y
+          sudo apt-get update -y
+          sudo apt-get install -y --reinstall rsync
+
+          # 2. Verify installation and PATH
+          if ! which rsync > /dev/null; then
+            echo "::error::rsync is missing after installation"
             exit 1
           fi
 
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          echo "Current PATH: $PATH"
+          which rsync
+          /usr/bin/rsync --version
+
+          # 3. Debugging directory listing
+          echo "Listing /usr/bin:"
+          ls -l /usr/bin | grep rsync
+
+          # 4. Execute rsync using the full path
           echo "Deploying with rsync..."
-          rsync -avz --delete \
+          /usr/bin/rsync -avz --delete \
             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/bvc_id_rsa" \
             --exclude=.git \
             --exclude=.github \
-            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ env.DEPLOYMENT_PATH }}:${{ env.DEPLOYMENT_PATH }}/
+            deployment/ ${{ secrets.CPANEL_USERNAME }}@${{ secrets.CPANEL_HOST }}:${{ env.DEPLOYMENT_PATH }}/
           EOF
+
           chmod +x deploy.sh
           ./deploy.sh
 
@@ -114,7 +126,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer, xml, dom, curl, libxml
+          extensions: mbstring, ctype, fileinfo, pdo, mysql, tokenizer
 
       - name: Install dependencies
         run: |
@@ -139,3 +151,4 @@ jobs:
              php artisan route:cache && \
              php artisan view:cache && \
              php artisan storage:link"
+
